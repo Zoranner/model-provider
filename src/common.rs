@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::config::ProviderConfig;
-use crate::traits::EmbedProvider;
+use crate::traits::{EmbedProvider, LlmProvider};
 
 /// 文本规范化
 pub(crate) fn normalize_for_embedding(text: &str) -> String {
@@ -102,5 +102,89 @@ impl EmbedProvider for OpenaiCompatibleEmbed {
 
     fn dimension(&self) -> usize {
         self.dimension
+    }
+}
+
+/// OpenAI 兼容格式 LLM（供阿里云、OpenAI、Ollama、智谱使用）
+pub struct OpenaiCompatibleLlm {
+    client: Client,
+    api_key: String,
+    model: String,
+    base_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenaiChatRequest {
+    model: String,
+    messages: Vec<OpenaiChatMessage>,
+    temperature: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OpenaiChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenaiChatResponse {
+    choices: Vec<OpenaiChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenaiChatChoice {
+    message: OpenaiChatMessage,
+}
+
+impl OpenaiCompatibleLlm {
+    pub fn new(config: &ProviderConfig) -> Result<Self> {
+        let client = Client::builder().timeout(Duration::from_secs(60)).build()?;
+        Ok(Self {
+            client,
+            api_key: config.api_key.clone(),
+            model: config.model.clone(),
+            base_url: config.base_url.clone(),
+        })
+    }
+}
+
+#[async_trait]
+impl LlmProvider for OpenaiCompatibleLlm {
+    async fn chat(&self, prompt: &str) -> Result<String> {
+        let request = OpenaiChatRequest {
+            model: self.model.clone(),
+            messages: vec![OpenaiChatMessage {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            }],
+            temperature: 0.2,
+        };
+
+        let url = format!("{}/chat/completions", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await?;
+            tracing::error!("LLM API error ({}): {}", status, error_text);
+            anyhow::bail!("LLM API error ({}): {}", status, error_text);
+        }
+
+        let chat_response: OpenaiChatResponse = response.json().await?;
+
+        chat_response
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .ok_or_else(|| anyhow::anyhow!("LLM response has no choices"))
     }
 }

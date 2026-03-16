@@ -34,3 +34,10 @@ pub trait RerankProvider: Send + Sync {
         top_n: Option<usize>,
     ) -> Result<Vec<RerankItem>>;
 }
+
+/// LLM Provider Trait
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    /// 单轮对话
+    async fn chat(&self, prompt: &str) -> Result<String>;
+}

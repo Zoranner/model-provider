@@ -13,7 +13,7 @@ mod openai;
 mod zhipu;
 
 pub use config::ProviderConfig;
-pub use traits::{EmbedProvider, RerankItem, RerankProvider};
+pub use traits::{EmbedProvider, LlmProvider, RerankItem, RerankProvider};
 
 /// 创建 Embedding Provider
 pub fn create_embed_provider(config: &ProviderConfig) -> anyhow::Result<Box<dyn EmbedProvider>> {
@@ -44,5 +44,20 @@ pub fn create_rerank_provider(config: &ProviderConfig) -> anyhow::Result<Box<dyn
         #[cfg(feature = "zhipu")]
         "zhipu" => Ok(Box::new(zhipu::rerank::ZhipuRerankProvider::new(config)?)),
         other => anyhow::bail!("Unknown or disabled rerank provider: {}", other),
+    }
+}
+
+/// 创建 LLM Provider
+pub fn create_llm_provider(config: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
+    match config.provider_name.as_str() {
+        #[cfg(feature = "aliyun")]
+        "aliyun" => Ok(Box::new(common::OpenaiCompatibleLlm::new(config)?)),
+        #[cfg(feature = "openai")]
+        "openai" => Ok(Box::new(common::OpenaiCompatibleLlm::new(config)?)),
+        #[cfg(feature = "ollama")]
+        "ollama" => Ok(Box::new(common::OpenaiCompatibleLlm::new(config)?)),
+        #[cfg(feature = "zhipu")]
+        "zhipu" => Ok(Box::new(common::OpenaiCompatibleLlm::new(config)?)),
+        other => anyhow::bail!("Unknown or disabled LLM provider: {}", other),
     }
 }

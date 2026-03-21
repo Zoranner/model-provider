@@ -1,37 +1,196 @@
 # 设计准则
 
-本文档约定本库在演进时应遵守的原则，供新增能力、接新厂商或改错误语义时对照。若与实现不一致，应优先修正实现或更新本文档之一，避免长期漂移。接口细节仍以源码与厂商文档为准。
+本文档约定库的架构原则和演进边界。新增能力、接新厂商或修改错误语义时请对照。
 
-## 范围与默认形态
+若实现与准则不一致，应优先修正实现或更新本文档，避免长期漂移。
 
-本库面向「在 Rust 里用统一配置调用多家云上的常见 AI HTTP API」这一场景。默认假设是单次请求、请求与响应主体为 JSON、非流式读完整响应体；TLS 走 rustls，与 `reqwest` 的选型保持一致。需要流式输出、multipart 上传、长连接或重试风暴控制等能力时，不强行塞进现有 `post_bearer_json` 形态，而应单独设计 trait、客户端路径与文档章节，并在本准则中增补一条「已采纳的例外」说明，以免调用方误以为行为与现有模态一致。
+---
+
+## 定位与范围
+
+**目标**：在 Rust 中用统一配置调用多家云上的常见 AI HTTP API。
+
+**默认假设**：
+- 单次请求，非流式
+- 请求与响应主体为 JSON
+- TLS 走 rustls（与 reqwest 选型一致）
+
+**超出范围**（不强行塞进现有形态，需单独设计）：
+- 流式输出
+- multipart 上传
+- 长连接
+- 重试风暴控制
+
+若需要上述能力，应新增独立 trait 和文档章节，并在本准则中记录。
+
+---
 
 ## Feature 与工厂
 
-厂商维度与模态维度通过 Cargo feature 正交组合。只有两者同时满足时，对应工厂才参与编译；运行时若配置与编译结果不匹配，应在工厂阶段返回明确错误，而不是发请求后再以模糊方式失败。`ProviderDisabled` 用于「当前编译配置下这条分支不可用」，例如未启用某厂商 feature 或某模态 feature。`Unsupported` 用于「该模态已编译，但该厂商在此模态没有实现，或能力仍为占位（如语音工厂）」。对照实例：启用 `rerank` 时，`OpenAI` / `Ollama` / `Anthropic` 无重排序实现，工厂应返回 `Unsupported`；仅当未启用 `aliyun` / `zhipu` feature 却仍选择对应厂商时，才属 `ProviderDisabled`。未启用 `anthropic` feature 却选 `Anthropic` 时，在各工厂为 `ProviderDisabled`。若未来要在类型上进一步区分二者，属于破坏性较小的演进方向，改前须更新本文档与 `rust-api.md` 中的错误说明。
+### 正交组合
+
+厂商维度与模态维度通过 Cargo feature 正交组合：
+
+```
+# 只用 OpenAI 对话
+features = ["openai", "chat"]
+
+# 用阿里云全部能力
+features = ["aliyun", "chat", "embed", "rerank", "image"]
+```
+
+### 编译时检查
+
+只有厂商 feature 和模态 feature 同时满足时，对应实现才参与编译。
+
+运行时配置与编译结果不匹配时，应在**工厂阶段**返回明确错误，而非发请求后模糊失败。
+
+### 错误语义
+
+| 错误 | 含义 | 示例 |
+|:---|:---|:---|
+| `ProviderDisabled` | 未启用厂商或模态 feature | 用了 `Aliyun` 但没开 `aliyun` feature |
+| `Unsupported` | 厂商不支持该能力 | `OpenAI` + `rerank` |
+
+**区分原则**：
+- 编译配置问题 → `ProviderDisabled`
+- 厂商能力问题 → `Unsupported`
+
+---
 
 ## 配置与 HTTP 约定
 
-对外配置集中在 `ProviderConfig`：厂商枚举、`api_key`、`base_url`、模型名、嵌入维数（嵌入必填）、可选超时。路径拼接统一对 `base_url` 做尾部斜杠规范化后再接具体 segment，避免双斜杠或遗漏；各模态文档中须写明真实 URL 形态（包括阿里云 rerank 使用 `reranks` 等与「直觉不一致」的细节）。鉴权默认采用 `Authorization: Bearer`；**Anthropic Messages 兼容**等例外使用 `x-api-key` 与版本头（见 `HttpClient::post_json_with_headers`）；**Google Gemini** 的 **generateContent**、**embedContent** / **batchEmbedContents** 使用 query 参数 `key`（见 `HttpClient::post_json_query`）。各模态 rustdoc 与 HTTP 文档应写明具体形态。同一实现可按兼容契约对接官方或第三方网关。是否接受空密钥由上游网关决定，本库不假装替用户做本地校验，但应在 rustdoc 中写明这一行为，以免本地网关与云厂商表现不同造成困惑。
+### 配置集中
 
-`model` 字段视为**透传**：不在库内维护各厂商可用模型清单，也不做「该厂商是否支持此模型」的预检。名称是否合法、是否有权限、是否在所选地域开通，一律以远端响应为准；典型失败形态为 HTTP 非 2xx，映射为 `Error::Api`（响应体经各实现整理后写入 `message`）。若将来引入可选预检或模型表，须在准则中单独立项，并明确与现有「薄封装」边界的关系，避免维护者误以为必须在库内同步全量模型目录。
+对外配置集中在 `ProviderConfig`：
+- `provider` — 厂商枚举
+- `api_key` — API 密钥
+- `base_url` — 网关地址
+- `model` — 模型名称
+- `dimension` — 向量维度（embed 必填）
+- `timeout` — 可选超时
 
-## 实现分层与可见性
+### 模型名称透传
 
-各模态以子模块组织，对外稳定面主要是 crate 根重导出的 trait、类型与 `create_*_provider` 工厂。具体 HTTP 结构体、解析逻辑与 `pub(crate)` 类型属于实现细节，不保证 semver 下的稳定性。需要让使用者理解契约时，通过 `pub mod` 暴露子模块仅用于承载模块级 rustdoc，而不是鼓励依赖子模块路径编程；若 crates.io 发布后需收紧可见性，应视为 major 或事先在准则中声明「子模块路径不稳定」。新增厂商时优先复用已有 OpenAI 兼容实现；只有请求体或路径与兼容模式明显不一致时再拆独立子文件（如智谱嵌入、阿里云文生图），并在 HTTP 文档中标注「非兼容」。
+`model` 字段**原样进入请求**，库内不做校验：
+- 不维护各厂商可用模型清单
+- 不做「该厂商是否支持此模型」预检
+- 模型是否合法、有权限、已开通，一律以远端响应为准
 
-## 错误与依赖
+### URL 拼接
 
-错误类型使用 `thiserror` 等可枚举、可展示的形式，避免在库内依赖「任意上下文堆栈」型错误作为常规返回。HTTP 非 2xx 时尽量把响应体信息带入 `Error::Api` 或解析后的文案；JSON 结构不符时用 `Parse` 或 `MissingField` 并指向缺失字段名，便于排查。引入新的外部依赖应克制：优先 std 与已有栈内能力；若增加依赖，在 PR 或变更说明中注明用途，并考虑 feature 门禁，避免默认 feature 膨胀。
+路径拼接统一处理尾部斜杠：
+```
+base_url = "https://api.openai.com/v1"
+path = "/chat/completions"
+→ "https://api.openai.com/v1/chat/completions"
+```
+
+### 鉴权约定
+
+| 鉴权方式 | 适用厂商 |
+|:---|:---|
+| `Authorization: Bearer` | OpenAI、阿里云、Ollama、智谱 |
+| `x-api-key` + `anthropic-version` | Anthropic |
+| URL query `key=` | Google Gemini |
+
+空密钥是否接受由上游网关决定，库内不做本地校验。
+
+---
+
+## 实现分层
+
+### 公开 API
+
+crate 根重导出的稳定面：
+- trait：`ChatProvider`、`EmbedProvider` 等
+- 类型：`Provider`、`ProviderConfig`、`Error` 等
+- 工厂：`create_chat_provider` 等
+
+### 实现细节
+
+以下属于 `pub(crate)`，不保证 semver 稳定：
+- HTTP 请求/响应结构体
+- 解析逻辑
+- 子模块内部类型
+
+### 子模块可见性
+
+`chat`、`embed` 等子模块作为 `pub mod` 暴露，仅用于承载 rustdoc，不鼓励依赖子模块路径编程。
+
+### 厂商实现优先级
+
+1. 优先复用 OpenAI 兼容实现
+2. 只有请求体或路径明显不一致时才拆独立文件
+3. 非兼容实现需在 HTTP 文档中标注
+
+---
+
+## 错误处理
+
+### 类型设计
+
+使用 `thiserror` 等可枚举形式，避免「任意上下文堆栈」型错误。
+
+### 错误携带信息
+
+| 场景 | 错误类型 | 携带信息 |
+|:---|:---|:---|
+| HTTP 非 2xx | `Api` | 状态码 + 响应体信息 |
+| JSON 结构不符 | `Parse` | 解析失败说明 |
+| 响应缺字段 | `MissingField` | 缺失字段名 |
+
+---
 
 ## 文档分工
 
-crate 内 rustdoc 负责「调用方在 IDE 或 `cargo doc` 中能直接看到的契约」：单轮对话、固定字段、占位能力、路径差异等。`docs/` 下的 Markdown 负责索引、HTTP 字段表、与本准则这样的规范文本。改行为时至少同步一侧；若用户可见行为变了，应同步 `README.md` 中的矩阵或示例。厂商侧 API 变更不由本库保证，但发版前应用 changelog 或文档注记提醒核对厂商文档。
+| 文档 | 职责 |
+|:---|:---|
+| rustdoc | 调用方在 IDE 或 `cargo doc` 中直接看到的契约 |
+| `README.md` | 快速入门、能力矩阵、配置示例 |
+| `docs/api-reference.md` | Rust API 完整参考 |
+| `docs/http-endpoints.md` | HTTP 端点细节 |
+| `docs/design-guidelines.md` | 架构原则与边界 |
 
-## 测试与质量
+改行为时至少同步一侧；用户可见行为变了，应同步 `README.md`。
 
-对依赖 HTTP 的行为变更，优先用 wiremock 一类方式固定响应，覆盖成功体、业务错误体、非 JSON 的异常响应等，与 TODO 中的质量项对齐。不为实现细节写脆性过强的全文快照测试；重点断言状态映射、错误变体与关键字段解析。全 feature 文档与测试应在发版前可重复执行：本仓库在推送 `v*` 版本标签时会通过 GitHub Actions 跑全 feature 的 `fmt`、`clippy` 与 `test`；日常开发与合并前亦应在本地或自选 CI 中执行相同检查，避免「只在默认 feature 下能通过」的盲区。
+---
 
-## 非目标（当前阶段）
+## 测试期望
 
-下列方向可以讨论和排期，但在未写入新 trait 与新准则段落之前，不把它们当作现有 API 的隐含承诺：自动重试与 429 退避、共享 `reqwest::Client` 连接池策略、流式 chat、语音 multipart、图像超大载荷分块等。默认亦**不**承担：按厂商维护可用模型白名单、在发 HTTP 前根据模型名拦截请求。占位模块（如 `audio`）允许长期存在，但工厂与 rustdoc 必须明确「未接远端」，避免与已接厂商的模态混淆。
+### HTTP 测试
+
+优先用 wiremock 固定响应，覆盖：
+- 成功响应体
+- 业务错误体
+- 非 JSON 异常响应
+
+不为实现细节写脆性过强的全文快照测试，重点断言：
+- 状态映射
+- 错误变体
+- 关键字段解析
+
+### 全 feature 检查
+
+发版前确保全 feature 下通过：
+```bash
+cargo fmt --check
+cargo clippy --all-features -- -D warnings
+cargo test --all-features
+```
+
+---
+
+## 非目标
+
+下列方向在未写入新 trait 与新准则段落之前，不作为现有 API 的隐含承诺：
+
+- 自动重试与 429 退避
+- 共享 `reqwest::Client` 连接池策略
+- 流式 chat
+- 语音 multipart
+- 图像超大载荷分块
+- 按厂商维护可用模型白名单
+- 发 HTTP 前根据模型名拦截请求
+
+占位模块（如 `audio`）允许长期存在，但工厂与 rustdoc 必须明确「未接远端」。

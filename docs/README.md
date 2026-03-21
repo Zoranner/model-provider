@@ -1,14 +1,27 @@
-# model-provider 接口文档
+# 文档
 
-本目录描述 crate 的 **对外 Rust API** 与各实现背后的 **HTTP 调用约定**。实现细节以源码为准；若云端接口升级，请以厂商文档为准并在本库发版时核对。维护者发版检查清单与工作流说明见仓库 [TODO.md](../TODO.md)（「发版前清单」「CI 与发版」）及 [.github/workflows/cargo-publish.yml](../.github/workflows/cargo-publish.yml)。
+本目录包含 model-provider 的完整技术文档。
 
-阅读顺序：先扫 [接口一览](interfaces.md)，再读 [Rust 公共 API](rust-api.md) 了解类型与工厂，需要对接网关时查阅 [HTTP 端点汇总](http-api.md)。参与维护或扩展本库时，请阅读 [设计准则](design-guidelines.md)，作为 feature、错误语义、HTTP 分层与文档分工的约定依据。
+## 面向用户
 
-相关文件：
+| 文档 | 说明 |
+|:---|:---|
+| [API 参考](api-reference.md) | Rust trait、工厂函数、配置类型、错误处理 |
+| [HTTP 端点](http-endpoints.md) | 各厂商的请求/响应格式、路径、鉴权方式 |
 
-- [接口一览](interfaces.md)：能力、工厂、trait、HTTP 摘要对照表
-- [Rust 公共 API](rust-api.md)：`ProviderConfig`、错误类型、`create_*_provider`、各能力 trait
-- [HTTP 端点汇总](http-api.md)：方法、路径、`base_url` 约定、请求与响应字段摘要
-- [设计准则](design-guidelines.md)：编译边界、错误分类、配置与 HTTP 约定、文档与测试期望、非目标
+## 面向贡献者
 
-用户可见行为变更见仓库根目录 [CHANGELOG.md](../CHANGELOG.md)（与 `README.md` 能力矩阵对照阅读）。
+| 文档 | 说明 |
+|:---|:---|
+| [设计准则](design-guidelines.md) | 库的架构原则、边界、演进约定 |
+| [贡献指南](contributing.md) | 如何参与开发、测试、发版流程 |
+
+## 快速定位
+
+**我想……**
+
+- 了解有哪些 trait 和方法 → [API 参考](api-reference.md)
+- 查看某个厂商的 HTTP 细节 → [HTTP 端点](http-endpoints.md)
+- 接入新厂商 → [贡献指南](contributing.md) + [设计准则](design-guidelines.md)
+- 理解错误类型 → [API 参考 - 错误处理](api-reference.md#错误处理)
+- 本地生成文档 → `cargo doc --all-features --no-deps --open`

@@ -2,6 +2,8 @@
 
 以下内容对应 `src/lib.rs` 及子模块的 **公开重导出** 与 **工厂函数**。未列出的模块成员多为 `pub(crate)`，不保证稳定。
 
+`chat`、`embed`、`rerank`、`image`、`audio` 已作为 **`pub mod`** 暴露，便于在 **rustdoc** 中阅读各模态模块级契约（与 crate 根摘要互补）。本地可执行 `cargo doc --no-deps --open`；若需一次浏览全部模态文档，可使用 `cargo doc --all-features --no-deps --open`。本节与 [HTTP 文档](http-api.md) 为 Markdown 侧摘要，路径与字段以源码为准。
+
 ## 配置与枚举
 
 `ProviderConfig` 字段：`provider`（`Provider` 枚举）、`api_key`、`base_url`、`model`、`dimension`（可选，embed 必填）、`timeout`（可选，覆盖该次 HTTP 超时）。

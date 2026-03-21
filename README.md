@@ -2,7 +2,7 @@
 
 用同一套配置在 Rust 里调用多家云的 **对话**、**向量**、**重排序** API（HTTPS，默认 rustls）。按需打开 Cargo feature，用不到的厂商不会编进产物。
 
-各能力的 Rust API 与 HTTP 约定已整理在 [docs 目录](docs/README.md)（含 [接口一览](docs/interfaces.md)）。
+各能力的 Rust API 与 HTTP 约定已整理在 [docs 目录](docs/README.md)（含 [接口一览](docs/interfaces.md)）。维护与扩展本库时的设计约定见 [docs/design-guidelines.md](docs/design-guidelines.md)。
 
 ## 🚀 快速接入
 

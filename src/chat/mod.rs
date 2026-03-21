@@ -1,4 +1,16 @@
-//! Chat / 补全（OpenAI 兼容 `chat/completions`）
+//! 对话补全：OpenAI 兼容 `POST …/chat/completions`，**非流式** JSON。
+//!
+//! # [`ChatProvider::chat`]
+//!
+//! `prompt` 会作为**唯一一条** `role: user` 消息发送，不包含 system / 多轮 history。若需要多轮或 system prompt，须另行扩展 API 或直接使用上游 HTTP。
+//!
+//! 请求体中 **`temperature` 固定为 `0.2`**，调用方无法通过本 trait 覆盖。
+//!
+//! # URL 与鉴权
+//!
+//! 请求地址为 `{base_url}/chat/completions`，其中 `base_url` 来自 [`ProviderConfig`]，会先对 `base_url` 做 `trim_end_matches('/')` 再拼接路径段。
+//!
+//! 鉴权为 `Authorization: Bearer {api_key}`，与其它模态相同，均为 JSON POST。**空字符串密钥仍会原样放入请求头**；网关是否接受由上游决定（例如部分本地 Ollama 部署不校验 Bearer）。
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -13,6 +25,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    /// 单轮用户消息补全；语义与模块级文档一致。
     async fn chat(&self, prompt: &str) -> Result<String>;
 }
 

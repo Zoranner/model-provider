@@ -6,7 +6,7 @@
 |:---|:---|:---|:---|
 | 对话 | `create_chat_provider`（`chat`） | `ChatProvider` | `POST …/chat/completions`，OpenAI 兼容 |
 | 向量 | `create_embed_provider`（`embed`） | `EmbedProvider` | `POST …/embeddings`；智谱无 `dimensions` 字段 |
-| 重排序 | `create_rerank_provider`（`rerank`） | `RerankProvider` | `POST …/rerank`（阿里云、智谱） |
+| 重排序 | `create_rerank_provider`（`rerank`） | `RerankProvider` | 阿里云 `POST …/reranks`；智谱 `POST …/rerank` |
 | 文生图 | `create_image_provider`（`image`） | `ImageProvider` | OpenAI：`…/images/generations`；阿里云：`…/services/aigc/multimodal-generation/generation` |
 | 语音识别 | `create_transcription_provider`（`audio`） | `TranscriptionProvider` | 未实现 |
 | 语音合成 | `create_speech_provider`（`audio`） | `SpeechProvider` | 未实现 |

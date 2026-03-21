@@ -6,14 +6,14 @@
 
 - [x] 文生图：OpenAI 兼容 `images/generations`
 - [x] 文生图：阿里云 DashScope `multimodal-generation/generation`
-- [x] 仓库内 Markdown 文档：`docs/`（接口一览、Rust API、HTTP 端点）
+- [x] 仓库内 Markdown 文档：`docs/`（接口一览、Rust API、HTTP 端点、[设计准则](docs/design-guidelines.md)）
 - [x] 图像相关 wiremock 单测（成功体、阿里云 body 内业务错误）
+- [x] crate rustdoc（`lib.rs`、`chat`、`Error`）：Chat 单轮、固定 `temperature`、OpenAI 兼容路径、Bearer/空 key；`audio` 工厂恒 `Unsupported`；`ProviderDisabled` 与 `Unsupported` 文义说明（未改 `Error` 结构）
+- [x] 模态模块 `embed` / `rerank` / `image` / `audio`：模块级 rustdoc、`pub mod`、trait/类型简要说明；crate 根摘要补充 rerank 路径（阿里云 `…/reranks`）、文生图双路径；`docs/http-api.md` 中阿里云 rerank 与实现对齐
 
 ## 高优先级（契约与可预期行为）
 
-- [ ] 在 **crate rustdoc**（`lib.rs` 与各模态模块）写明：Chat 为单轮、`temperature` 固定值、OpenAI 兼容路径；无 API key 时仍发送 Bearer 的行为取决于上游（如 Ollama）
-- [ ] 在 rustdoc 中强调：`audio` 工厂当前恒为 `Unsupported`，避免误以为已接厂商
-- [ ] 梳理 **`ProviderDisabled` vs `Unsupported`**：是否在 `Error` 中带 `capability` 字段或拆变体，使「feature 未开」与「厂商不支持该能力」可区分
+- [ ] 梳理 **`ProviderDisabled` vs `Unsupported`**：是否在 `Error` 中带 `capability` 字段或拆变体，使「feature 未开」与「厂商不支持该能力」可区分（当前仅在文档中区分）
 
 ## 中优先级（质量与维护）
 

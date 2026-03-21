@@ -373,8 +373,7 @@ mod tests {
     #[tokio::test]
     async fn stream_generate_content_yields_text_chunk() {
         let server = MockServer::start().await;
-        let sse_body =
-            concat!("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]}}]}\n\n",);
+        let sse_body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]}}]}\n\n";
         Mock::given(method("POST"))
             .and(path(
                 "/v1beta/models/gemini-2.0-flash:streamGenerateContent",

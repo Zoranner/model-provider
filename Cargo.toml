@@ -1,24 +1,38 @@
 [package]
 name = "model-provider"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Zoranner"]
-description = "Multi-provider AI API client (Embed, Rerank, LLM)"
+description = "Multi-provider AI API client (chat, embed, rerank, image, audio)"
 license = "GPL-3.0-only"
 
 [features]
-default = ["openai"]
-all = ["aliyun", "ollama", "openai", "zhipu"]
+# 厂商
+default = ["openai", "chat", "embed"]
+openai = []
 aliyun = []
 ollama = []
-openai = []
 zhipu = []
+
+# 模态
+chat = []
+embed = []
+rerank = []
+image = []
+audio = []
+
+# 组合
+all-providers = ["aliyun", "ollama", "openai", "zhipu"]
+all-modalities = ["chat", "embed", "rerank", "image", "audio"]
+full = ["all-providers", "all-modalities"]
+# 兼容旧 feature 名：等同启用全部厂商 + 全部模态
+all = ["full"]
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
-anyhow = "1"
+thiserror = "2"
 regex = "1"
 tracing = "0.1"

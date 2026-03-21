@@ -1,22 +1,13 @@
-//! 智谱 AI Embedding
+//! 智谱 Embedding（请求体不含 `dimensions`）
 
-use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
-use crate::common::normalize_for_embedding;
+use crate::client::HttpClient;
 use crate::config::ProviderConfig;
-use crate::traits::EmbedProvider;
-
-pub struct ZhipuEmbedProvider {
-    client: Client,
-    api_key: String,
-    model: String,
-    base_url: String,
-    dimension: usize,
-}
+use super::EmbedProvider;
+use crate::error::Result;
+use crate::util::normalize_for_embedding;
 
 #[derive(Debug, Serialize)]
 struct ZhipuEmbedRequest {
@@ -34,33 +25,41 @@ struct ZhipuEmbedData {
     embedding: Vec<f32>,
 }
 
-impl ZhipuEmbedProvider {
-    pub fn new(config: &ProviderConfig, dimension: usize) -> Result<Self> {
-        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+pub(crate) struct ZhipuEmbed {
+    client: HttpClient,
+    api_key: String,
+    model: String,
+    base_url: String,
+    dimension: usize,
+}
 
+impl ZhipuEmbed {
+    pub fn new(config: &ProviderConfig, dimension: usize, client: HttpClient) -> Self {
         tracing::info!(
-            "Created ZhipuEmbedProvider: model={}, dimension={}, base_url={}",
+            "ZhipuEmbed: model={}, dimension={}, base_url={}",
             config.model,
             dimension,
             config.base_url
         );
-
-        Ok(Self {
+        Self {
             client,
             api_key: config.api_key.clone(),
             model: config.model.clone(),
             base_url: config.base_url.clone(),
             dimension,
-        })
+        }
     }
 }
 
 #[async_trait]
-impl EmbedProvider for ZhipuEmbedProvider {
+impl EmbedProvider for ZhipuEmbed {
     async fn encode(&self, text: &str) -> Result<Vec<f32>> {
         let normalized = normalize_for_embedding(text);
         let embeddings = self.encode_batch(&[&normalized]).await?;
-        Ok(embeddings.into_iter().next().unwrap())
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::error::Error::MissingField("embeddings[0]"))
     }
 
     async fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
@@ -71,25 +70,12 @@ impl EmbedProvider for ZhipuEmbedProvider {
             input: normalized,
         };
 
-        let url = format!("{}/embeddings", self.base_url);
+        let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
 
-        let response = self
+        let embed_response: ZhipuEmbedResponse = self
             .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
+            .post_bearer_json(&url, &self.api_key, &request, |s| s)
             .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await?;
-            tracing::error!("Zhipu embed API error ({}): {}", status, error_text);
-            anyhow::bail!("Zhipu embed API error ({}): {}", status, error_text);
-        }
-
-        let embed_response: ZhipuEmbedResponse = response.json().await?;
 
         Ok(embed_response
             .data

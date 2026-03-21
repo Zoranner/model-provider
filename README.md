@@ -72,6 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 厂商 feature（`openai` / `aliyun` / `ollama` / `zhipu`）与模态 feature（`chat` / `embed` / `rerank` / `image` / `audio`）要同时满足才会在对应工厂里可用；配错组合会得到明确的 `Error`，而不是静默失败。若某能力在矩阵中为 ❌（例如 OpenAI 的 Rerank），启用该模态 feature 后工厂会对该厂商返回 `Error::Unsupported`，而不是 `ProviderDisabled`；未把对应厂商编进产物时仍为 `ProviderDisabled`。细节见 [Rust 公共 API](docs/rust-api.md) 与 [变更记录](CHANGELOG.md)。
 
+向 crates.io 发版时：先把 `Cargo.toml` 里的 `version` 调到与即将打的标签一致（如 `v0.2.1` 对应 `0.2.1`），更新 [CHANGELOG](CHANGELOG.md) 后推送该标签。GitHub Actions（`.github/workflows/cargo-publish.yml`）会在标签推送后执行全 feature 的格式化、Clippy 与测试，通过后使用仓库 Secret `CARGO_ACCESS_TOKEN` 执行 `cargo publish`。默认不在普通 push 或 PR 上跑这套检查。
+
 ## 📜 许可证
 
 [MIT](LICENSE)

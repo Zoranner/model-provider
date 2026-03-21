@@ -114,7 +114,12 @@ mod factory_tests {
     #[cfg(not(feature = "openai"))]
     #[test]
     fn openai_disabled_without_openai_feature() {
-        let cfg = ProviderConfig::new(Provider::OpenAI, "k", "https://api.openai.com/v1", "dall-e-3");
+        let cfg = ProviderConfig::new(
+            Provider::OpenAI,
+            "k",
+            "https://api.openai.com/v1",
+            "dall-e-3",
+        );
         match create(&cfg) {
             Err(Error::ProviderDisabled(s)) => assert_eq!(s, "openai"),
             Ok(_) => panic!("expected error"),

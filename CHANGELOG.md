@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- GitHub Actions：推送 `v*` 标签时运行 `fmt`、`clippy`（全 feature）、`test`（全 feature），通过后发布至 crates.io（需配置 `CARGO_ACCESS_TOKEN`）；工具链使用 `dtolnay/rust-toolchain@stable`（替代已归档的 `actions-rs/toolchain`）。
+
 ### Changed
 
 - **Rerank**：`create_rerank_provider` 对 `OpenAI` / `Ollama` 现返回 `Error::Unsupported`（`capability: "rerank"`），而不再返回 `Error::ProviderDisabled`，以区分「未启用厂商 feature」与「该厂商在本模态无实现」。未启用 `aliyun` / `zhipu` feature 时仍选阿里云 / 智谱的，仍为 `ProviderDisabled`（行为未变）。若依赖旧错误变体区分 OpenAI/Ollama 重排序，请改为匹配 `Unsupported`。

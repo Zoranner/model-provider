@@ -9,6 +9,7 @@
 - [配置](#配置)
 - [工厂函数](#工厂函数)
 - [能力 Trait](#能力-trait)
+- [流式对话](#流式对话)
 - [错误处理](#错误处理)
 - [能力矩阵](#能力矩阵)
 
@@ -73,7 +74,7 @@ let provider: Provider = "unknown".parse()?; // Err(UnknownProvider)
 fn create_chat_provider(cfg: &ProviderConfig) -> Result<Box<dyn ChatProvider>>
 ```
 
-创建对话 provider。需要启用 `chat` feature + 对应厂商 feature。
+创建对话 provider。需要启用 `chat` feature + 对应厂商 feature。支持非流式（`chat`）与流式（`chat_stream`）两种调用方式。
 
 ### create_embed_provider
 
@@ -118,15 +119,17 @@ fn create_speech_provider(cfg: &ProviderConfig) -> Result<Box<dyn SpeechProvider
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
     async fn chat(&self, prompt: &str) -> Result<String>;
+    async fn chat_stream(&self, prompt: &str) -> Result<ChatStream>;
 }
 ```
 
-单轮对话，返回模型生成的文本。
+- **`chat`**：单轮对话，返回完整文本。
+- **`chat_stream`**：单轮流式补全，返回 `ChatStream`。使用 `futures::StreamExt` 驱动。
 
 **实现约定**：
 - 单条用户消息
 - `temperature` 固定为 `0.2`
-- 非流式，等待完整响应
+- 流式请求体含 `stream: true`（OpenAI 兼容、Anthropic）；Gemini 使用 `streamGenerateContent` 端点
 
 ### EmbedProvider
 
@@ -212,6 +215,62 @@ pub trait SpeechProvider: Send + Sync {
 
 ---
 
+## 流式对话
+
+### 类型定义
+
+```rust
+pub type ChatStream = Pin<Box<dyn Stream<Item = Result<ChatChunk>> + Send>>;
+
+pub struct ChatChunk {
+    pub delta: Option<String>,
+    pub finish_reason: Option<FinishReason>,
+}
+
+pub enum FinishReason {
+    Stop,
+    Length,
+    ContentFilter,
+    ToolCalls,
+}
+```
+
+### 使用示例
+
+```rust
+use futures::StreamExt;
+use model_provider::{create_chat_provider, Provider, ProviderConfig};
+
+let cfg = ProviderConfig::new(
+    Provider::OpenAI,
+    std::env::var("OPENAI_API_KEY")?,
+    "https://api.openai.com/v1",
+    "gpt-4o-mini",
+);
+let chat = create_chat_provider(&cfg)?;
+
+let mut stream = chat.chat_stream("介绍一下 Rust").await?;
+while let Some(item) = stream.next().await {
+    let chunk = item?;
+    if let Some(text) = chunk.delta {
+        print!("{text}");
+    }
+    if let Some(reason) = chunk.finish_reason {
+        eprintln!("\n[结束: {:?}]", reason);
+    }
+}
+```
+
+### 各厂商实现差异
+
+| 厂商 | 端点 | SSE 格式 |
+|:---|:---|:---|
+| OpenAI / 阿里云 / Ollama / 智谱 | `POST …/chat/completions` + `stream: true` | `data: {...}`，结束 `data: [DONE]` |
+| Anthropic | `POST …/messages` + `stream: true` | `event: content_block_delta` 等事件类型 |
+| Google | `POST …/models/{model}:streamGenerateContent` | `data: {...}` |
+
+---
+
 ## 错误处理
 
 ### Error 枚举
@@ -266,10 +325,12 @@ create_rerank_provider(&cfg)?;  // Unsupported: OpenAI 没有 rerank
 
 | 能力 | Trait | 工厂函数 | OpenAI | Anthropic | Google | 阿里云 | Ollama | 智谱 |
 |:---|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|
-| Chat | `ChatProvider` | `create_chat_provider` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Chat | `ChatProvider`（含流式） | `create_chat_provider` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Embed | `EmbedProvider` | `create_embed_provider` | ✅ | — | ✅ | ✅ | ✅ | ✅ |
 | Rerank | `RerankProvider` | `create_rerank_provider` | — | — | — | ✅ | — | ✅ |
 | Image | `ImageProvider` | `create_image_provider` | ✅ | — | — | ✅ | — | — |
 | Audio | `TranscriptionProvider` / `SpeechProvider` | `create_*_provider` | — | — | — | — | — | — |
 
 **图例**：✅ 已实现 | — 不支持或未实现
+
+**Chat** 同时提供非流式（`chat`）与流式（`chat_stream`），见[流式对话](#流式对话)。

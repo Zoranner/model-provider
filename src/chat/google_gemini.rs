@@ -7,6 +7,8 @@
 //! 请求体与官方 REST 示例一致：`contents` 为单条仅含 `parts`（`text` 为 `prompt`）；[`Content.role`](https://ai.google.dev/api/caching#Content) 在文档中为 **可选**，单轮示例常省略。另含 `generationConfig.temperature`（固定 `0.2`）。若 prompt 被安全策略拦截，官方可能返回 **HTTP 200 且 `candidates` 为空**，此时应查看 `promptFeedback`；本实现会在该情况下返回 [`Error::Parse`] 并带入 `promptFeedback` 摘要。成功时从 `candidates[0].content.parts` 拼接各 `text`；若无文本则 [`Error::MissingField`]。
 
 use async_trait::async_trait;
+use futures::future::ready;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -14,8 +16,9 @@ use std::time::Duration;
 use crate::client::HttpClient;
 use crate::config::ProviderConfig;
 use crate::error::{Error, Result};
+use crate::sse::SseEvent;
 
-use super::ChatProvider;
+use super::{ChatChunk, ChatProvider, ChatStream, FinishReason};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -136,12 +139,105 @@ impl ChatProvider for GoogleGeminiChat {
 
         Self::extract_text(body)
     }
+
+    async fn chat_stream(&self, prompt: &str) -> Result<ChatStream> {
+        let request = GenerateContentRequest {
+            contents: vec![GeminiContent {
+                parts: vec![GeminiPart { text: prompt }],
+            }],
+            generation_config: GeminiGenerationConfig { temperature: 0.2 },
+        };
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/models/{}:streamGenerateContent", base, self.model);
+        let query = [("key", self.api_key.as_str())];
+        let sse = self
+            .client
+            .post_json_query_sse(&url, &query, &request, |s| s)
+            .await?;
+        Ok(Box::pin(
+            sse.filter_map(|item| ready(google_sse_item_to_chunk(item))),
+        ))
+    }
+}
+
+fn google_sse_item_to_chunk(item: Result<SseEvent>) -> Option<Result<ChatChunk>> {
+    match item {
+        Err(e) => Some(Err(e)),
+        Ok(ev) => google_parse_sse_event(ev),
+    }
+}
+
+fn google_parse_sse_event(ev: SseEvent) -> Option<Result<ChatChunk>> {
+    let data = ev.data.trim();
+    if data.is_empty() {
+        return None;
+    }
+    let v: Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(Error::Parse(e.to_string()))),
+    };
+
+    let candidates = v.get("candidates").and_then(|c| c.as_array())?;
+
+    if candidates.is_empty() {
+        if v.get("promptFeedback").is_some() {
+            let hint = v
+                .get("promptFeedback")
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            return Some(Err(Error::Parse(format!(
+                "Gemini streamGenerateContent returned no candidates: {hint}"
+            ))));
+        }
+        return None;
+    }
+
+    let c0 = &candidates[0];
+    let mut text = String::new();
+    if let Some(parts) = c0
+        .get("content")
+        .and_then(|x| x.get("parts"))
+        .and_then(|p| p.as_array())
+    {
+        for p in parts {
+            if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
+                text.push_str(t);
+            }
+        }
+    }
+
+    let finish = c0
+        .get("finishReason")
+        .and_then(|f| f.as_str())
+        .and_then(map_gemini_finish_reason);
+
+    if text.is_empty() && finish.is_none() {
+        return None;
+    }
+
+    let delta = if text.is_empty() { None } else { Some(text) };
+
+    Some(Ok(ChatChunk {
+        delta,
+        finish_reason: finish,
+    }))
+}
+
+fn map_gemini_finish_reason(s: &str) -> Option<FinishReason> {
+    match s {
+        "STOP" | "FINISH_REASON_STOP" => Some(FinishReason::Stop),
+        "MAX_TOKENS" | "FINISH_REASON_MAX_TOKENS" => Some(FinishReason::Length),
+        "SAFETY" | "RECITATION" | "OTHER" => Some(FinishReason::ContentFilter),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::ChatChunk;
     use crate::config::Provider;
+    use futures::StreamExt;
     use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -272,5 +368,34 @@ mod tests {
             }
             other => panic!("expected Api, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn stream_generate_content_yields_text_chunk() {
+        let server = MockServer::start().await;
+        let sse_body =
+            concat!("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]}}]}\n\n",);
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+            ))
+            .and(query_param("key", "AIza-test"))
+            .and(body_json(serde_json::json!({
+                "contents": [{ "parts": [{ "text": "hello" }] }],
+                "generationConfig": { "temperature": 0.2 }
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body),
+            )
+            .mount(&server)
+            .await;
+
+        let chat = GoogleGeminiChat::new(&test_config(&server)).unwrap();
+        let mut stream = chat.chat_stream("hello").await.unwrap();
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(chunk, ChatChunk::delta("Hi"));
+        assert!(stream.next().await.is_none());
     }
 }

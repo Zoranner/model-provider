@@ -18,6 +18,8 @@
 
 适用于：OpenAI、阿里云、Ollama、智谱
 
+**非流式**：
+
 ```
 POST {base_url}/chat/completions
 Authorization: Bearer {api_key}
@@ -34,6 +36,16 @@ Authorization: Bearer {api_key}
 
 **响应解析**：`choices[0].message.content`
 
+**流式（`chat_stream`）**：
+
+- 请求体在以上基础上增加 `"stream": true`
+- 请求头增加 `Accept: text/event-stream`
+- 响应为 SSE：`data:` 行为 Chat Completions **chunk** JSON（含 `choices[].delta.content`、`finish_reason`），流结束为 `data: [DONE]`
+
+**chunk 解析**：
+- `choices[].delta.content` → `ChatChunk.delta`
+- `choices[].finish_reason` → `ChatChunk.finish_reason`（映射：`stop`/`end_turn` → `Stop`，`length` → `Length`，`content_filter` → `ContentFilter`，`tool_calls` → `ToolCalls`）
+
 | 厂商 | 典型 base_url |
 |:---|:---|
 | OpenAI | `https://api.openai.com/v1` |
@@ -42,6 +54,8 @@ Authorization: Bearer {api_key}
 | 智谱 | `https://open.bigmodel.cn/api/paas/v4` |
 
 ### Anthropic Messages
+
+**非流式**：
 
 ```
 POST {base_url}/messages
@@ -61,12 +75,25 @@ anthropic-version: 2023-06-01
 
 **响应解析**：`content` 数组中各 `type: "text"` 块的 `text` 拼接
 
+**流式（`chat_stream`）**：
+
+- 请求体增加 `"stream": true`
+- 响应为 SSE：事件名如 `content_block_delta`（文本在 `delta.text`）、`message_delta`（`stop_reason`）、`message_stop` 等；库映射为 `ChatChunk` / `FinishReason`
+- 流内 `event: error` 映射为 `Error::Api`
+
+**事件映射**：
+- `content_block_delta` + `delta.type == "text_delta"` → `ChatChunk.delta(delta.text)`
+- `message_delta.stop_reason` → `ChatChunk.finish_reason`（`end_turn`/`stop_sequence` → `Stop`，`max_tokens` → `Length`，`tool_use` → `ToolCalls`）
+- `message_stop` → `ChatChunk.finish(Stop)`
+
 **注意**：
 - `max_tokens` 为库内常量，不可配置
 - `anthropic-version` 与 `model_provider::chat::ANTHROPIC_VERSION` 一致
 - 兼容遵循相同契约的第三方网关（如部分 Coding Plan）
 
 ### Google Gemini
+
+**非流式**：
 
 ```
 POST {base_url}/models/{model}:generateContent?key={api_key}
@@ -81,6 +108,18 @@ POST {base_url}/models/{model}:generateContent?key={api_key}
 ```
 
 **响应解析**：`candidates[0].content.parts` 中各 `text` 拼接
+
+**流式（`chat_stream`）**：
+
+```
+POST {base_url}/models/{model}:streamGenerateContent?key={api_key}
+```
+
+请求体与非流式 `generateContent` 相同。响应为 SSE：`data:` 行为 `GenerateContentResponse` 片段 JSON；从 `candidates[].content.parts[].text` 取增量。若某包中 `candidates` 为空且含 `promptFeedback`，返回解析错误。
+
+**chunk 解析**：
+- `candidates[].content.parts[].text` 拼接 → `ChatChunk.delta`
+- `candidates[].finishReason` → `ChatChunk.finish_reason`（映射：`STOP`/`FINISH_REASON_STOP` → `Stop`，`MAX_TOKENS`/`FINISH_REASON_MAX_TOKENS` → `Length`，`SAFETY`/`RECITATION`/`OTHER` → `ContentFilter`）
 
 **注意**：
 - 不使用 Bearer，API Key 作为 query 参数 `key`
@@ -124,7 +163,7 @@ Authorization: Bearer {api_key}
 }
 ```
 
-**注意**：`ProviderConfig::dimension` 仍须设置，用于 `EmbedProvider::dimension()` 返回值，且须与模型实际输出一致。
+**注意**：`ProviderConfig::dimension` 仍须设置。用于 `EmbedProvider::dimension()` 返回值，且须与模型实际输出一致。
 
 ### Google Gemini
 
@@ -161,7 +200,7 @@ POST {base_url}/models/{model}:batchEmbedContents?key={api_key}
 - 批量：`embeddings[].values`
 
 **注意**：
-- 不使用 Bearer，API Key 作为 query 参数
+- 不使用 Bearer，API Key 作为 query 参数 `key`
 - `model` 字段为资源名格式 `models/{model_id}`
 - 若配置的 `model` 已含 `models/` 前缀则不再重复
 
@@ -227,6 +266,7 @@ Authorization: Bearer {api_key}
 - 否则若有 `data[0].b64_json` → base64 解码为 `ImageOutput::Bytes`
 
 **size 映射**：
+
 | ImageSize | OpenAI 字符串 |
 |:---|:---|
 | `Square512` | `512x512` |
@@ -259,6 +299,7 @@ Authorization: Bearer {api_key}
 **响应解析**：`output.choices[0].message.content` 中第一项含 `image` 字段的 URL
 
 **size 映射**：
+
 | ImageSize | 阿里云字符串 |
 |:---|:---|
 | `Square512` | `512*512` |

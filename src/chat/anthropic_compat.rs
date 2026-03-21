@@ -7,6 +7,8 @@
 //! `base_url` 示例：`https://api.anthropic.com/v1`；实现会 `trim_end_matches('/')` 后拼接 `/messages`。
 
 use async_trait::async_trait;
+use futures::future::ready;
+use futures::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -14,8 +16,9 @@ use std::time::Duration;
 use crate::client::HttpClient;
 use crate::config::ProviderConfig;
 use crate::error::{Error, Result};
+use crate::sse::SseEvent;
 
-use super::ChatProvider;
+use super::{ChatChunk, ChatProvider, ChatStream, FinishReason};
 
 /// Anthropic Messages 兼容实现使用的 `anthropic-version` 请求头取值（与官方文档对齐；上游变更时需同步本常量）。
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -29,6 +32,15 @@ struct MessagesRequest<'a> {
     max_tokens: u32,
     messages: Vec<MessageParam<'a>>,
     temperature: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct MessagesStreamRequest<'a> {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<MessageParam<'a>>,
+    temperature: f32,
+    stream: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,12 +116,110 @@ impl ChatProvider for AnthropicCompatChat {
 
         Self::extract_assistant_text(content)
     }
+
+    async fn chat_stream(&self, prompt: &str) -> Result<ChatStream> {
+        let request = MessagesStreamRequest {
+            model: self.model.clone(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+            messages: vec![MessageParam {
+                role: "user",
+                content: prompt,
+            }],
+            temperature: 0.2,
+            stream: true,
+        };
+        let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
+        let headers = [
+            ("x-api-key", self.api_key.as_str()),
+            ("anthropic-version", ANTHROPIC_VERSION),
+        ];
+        let sse = self
+            .client
+            .post_json_with_headers_sse(&url, &headers, &request, |s| s)
+            .await?;
+        Ok(Box::pin(sse.filter_map(|item| {
+            ready(anthropic_sse_item_to_chunk(item))
+        })))
+    }
+}
+
+fn anthropic_sse_item_to_chunk(item: Result<SseEvent>) -> Option<Result<ChatChunk>> {
+    match item {
+        Err(e) => Some(Err(e)),
+        Ok(ev) => anthropic_parse_sse_event(ev),
+    }
+}
+
+fn anthropic_parse_sse_event(ev: SseEvent) -> Option<Result<ChatChunk>> {
+    let data = ev.data.trim();
+    if data.is_empty() {
+        return None;
+    }
+    let v: Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(Error::Parse(e.to_string()))),
+    };
+
+    if ev.event.as_deref() == Some("error")
+        || v.get("type").and_then(|t| t.as_str()) == Some("error")
+    {
+        let msg = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("anthropic stream error");
+        return Some(Err(Error::Api {
+            status: 500,
+            message: msg.to_string(),
+        }));
+    }
+
+    let ty = v.get("type").and_then(|t| t.as_str())?;
+
+    match ty {
+        "content_block_delta" => {
+            let delta = v.get("delta")?;
+            if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                let text = delta.get("text").and_then(|t| t.as_str())?;
+                return Some(Ok(ChatChunk::delta(text)));
+            }
+            None
+        }
+        "message_delta" => {
+            let stop = v
+                .get("delta")
+                .and_then(|d| d.get("stop_reason"))
+                .and_then(|s| s.as_str());
+            if let Some(r) = stop {
+                if let Some(fr) = map_anthropic_stop_reason(r) {
+                    return Some(Ok(ChatChunk {
+                        delta: None,
+                        finish_reason: Some(fr),
+                    }));
+                }
+            }
+            None
+        }
+        "message_stop" => Some(Ok(ChatChunk::finish(FinishReason::Stop))),
+        _ => None,
+    }
+}
+
+fn map_anthropic_stop_reason(s: &str) -> Option<FinishReason> {
+    match s {
+        "end_turn" | "stop_sequence" => Some(FinishReason::Stop),
+        "max_tokens" => Some(FinishReason::Length),
+        "tool_use" => Some(FinishReason::ToolCalls),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::{ChatChunk, FinishReason};
     use crate::config::Provider;
+    use futures::StreamExt;
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -205,5 +315,44 @@ mod tests {
             }
             other => panic!("expected Api, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn messages_stream_yields_text_delta_and_stop() {
+        let server = MockServer::start().await;
+        let sse_body = concat!(
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "sk-ant-test"))
+            .and(header("anthropic-version", ANTHROPIC_VERSION))
+            .and(body_json(serde_json::json!({
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 4096,
+                "messages": [{ "role": "user", "content": "hello" }],
+                "temperature": 0.2,
+                "stream": true,
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body),
+            )
+            .mount(&server)
+            .await;
+
+        let chat = AnthropicCompatChat::new(&test_config(&server)).unwrap();
+        let mut stream = chat.chat_stream("hello").await.unwrap();
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            chunks.push(item.unwrap());
+        }
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], ChatChunk::delta("Hi"));
+        assert_eq!(chunks[1], ChatChunk::finish(FinishReason::Stop));
     }
 }

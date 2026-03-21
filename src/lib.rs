@@ -11,7 +11,7 @@
 //!
 //! # 各模态契约摘要
 //!
-//! **对话（[`ChatProvider`]）**：`OpenAI` / `Aliyun` / `Ollama` / `Zhipu` 为 OpenAI 兼容 `POST {base_url}/chat/completions`，非流式；每次调用只发送一条 `user` 消息，`temperature` 固定为 `0.2`。**`Anthropic`**（`anthropic` + `chat`）为 **Anthropic Messages 兼容**，`POST {base_url}/messages`，请求头 `x-api-key` 与 `anthropic-version`；适用于官方端点及兼容同一契约的网关（含常见 Coding Plan 通道，见 [`chat`]）。**`Google`**（`google` + `chat`）为 **Gemini generateContent**，`POST {base_url}/models/{model}:generateContent`，API Key 为 query 参数 `key`；请求体与官方单轮 REST 示例一致（见 [`chat`]）。
+//! **对话（[`ChatProvider`]）**：`OpenAI` / `Aliyun` / `Ollama` / `Zhipu` 为 OpenAI 兼容 `POST {base_url}/chat/completions`；非流式 JSON 与流式 SSE（[`ChatProvider::chat_stream`]，`stream: true`）均支持。每次调用只发送一条 `user` 消息，`temperature` 固定为 `0.2`。**`Anthropic`**（`anthropic` + `chat`）为 **Anthropic Messages 兼容**，`POST {base_url}/messages`（流式同样 `stream: true`，SSE 事件见官方 streaming 文档）。**`Google`**（`google` + `chat`）非流式为 **`generateContent`**；流式为 **`streamGenerateContent`**，API Key 为 query `key`（见 [`chat`]）。
 //!
 //! **向量（[`EmbedProvider`]）**：`OpenAI` / `Aliyun` / `Ollama` / `Zhipu` 为 `POST {base_url}/embeddings`（非流式 JSON）。**`Google`**（`google` + `embed`）为 Gemini **`embedContent` / `batchEmbedContents`**（query `key`），见 [`embed`]。创建前须在 [`ProviderConfig::dimension`] 中设置维数，否则工厂返回 [`Error::MissingConfig`]。约定与文本预处理见 [`embed`]。
 //!
@@ -25,6 +25,7 @@
 mod client;
 mod config;
 mod error;
+mod sse;
 mod util;
 
 #[cfg(feature = "audio")]
@@ -44,7 +45,7 @@ pub use error::{Error, Result};
 #[cfg(feature = "audio")]
 pub use audio::{AudioFormat, SpeechProvider, TranscriptionProvider};
 #[cfg(feature = "chat")]
-pub use chat::ChatProvider;
+pub use chat::{ChatChunk, ChatProvider, ChatStream, FinishReason};
 #[cfg(feature = "embed")]
 pub use embed::EmbedProvider;
 #[cfg(feature = "image")]
@@ -52,7 +53,7 @@ pub use image::{ImageOutput, ImageProvider, ImageSize};
 #[cfg(feature = "rerank")]
 pub use rerank::{RerankItem, RerankProvider};
 
-/// 创建 Chat Provider（OpenAI 兼容或 Anthropic Messages，单轮、非流式；见 crate 文档与 [`chat`]）。
+/// 创建 Chat Provider（单轮对话；非流式 [`ChatProvider::chat`] 与流式 [`ChatProvider::chat_stream`]；见 [`chat`]）。
 #[cfg(feature = "chat")]
 pub fn create_chat_provider(config: &ProviderConfig) -> Result<Box<dyn ChatProvider>> {
     chat::create(config)

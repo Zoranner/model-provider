@@ -6,37 +6,12 @@
 
 ## 示例与文档卫生
 
-- [ ] 新增 `examples/`：至少覆盖「换厂商同一套代码」与多 feature 组合（可与 README 快速开始呼应）
+- [ ] 补充 `examples/`：除 `stream_chat` 外，增加「换厂商同一套代码」等非流式示例（可与 README 快速开始呼应）
 - [ ] `docs/contributing.md` 中克隆地址仍为占位 `your-repo`，有公开仓库后改为真实 URL
 
 ---
 
 ## 功能补全（按需求排期）
-
-### 流式 Chat（基础需求）
-
-- [ ] **API 设计**
-  - 新增 trait `ChatStreamProvider` 或在现有 `ChatProvider` 增加流式方法（例如 `async fn chat_stream(&self, prompt: &str) -> Result<impl Stream<Item = Result<ChatChunk>>>`）
-  - 确定统一返回类型：`ChatChunk` 需抽象出各厂商共同字段（如 `delta.content`、`finish_reason`），避免暴露厂商专属字段
-- [ ] **HTTP 与 SSE 解析**
-  - OpenAI 兼容（OpenAI / Aliyun / Ollama / Zhipu）：`stream: true`，SSE 格式 `data: {...}`，结束 `data: [DONE]`
-  - Anthropic：SSE 事件类型 `content_block_delta` / `message_stop` 等，需单独解析器
-  - Google：不支持 SSE，可能需要轮询或文档标注不支持流式
-- [ ] **错误处理**
-  - 流中途失败映射为 `Error`（网络中断、解析错误、服务端错误）
-  - 区分「连接阶段失败」与「流式阶段失败」
-- [ ] **feature gate**
-  - 流式实现建议挂在现有 `chat` feature 下，不新增 feature（避免分裂矩阵）
-- [ ] **文档与示例**
-  - `docs/http-endpoints.md` 补充各厂商流式端点差异
-  - `README.md` 与 `docs/api-reference.md` 同步流式用法
-  - `examples/` 中增加流式示例
-- [ ] **测试**
-  - wiremock 模拟 SSE 响应，覆盖正常流、中途错误、边界情况
-
----
-
-### 其他能力
 
 - [ ] **Anthropic Embed** — 官方若提供可用 HTTP API 再接入（当前矩阵为「—」）
 - [ ] **Google / Anthropic Image** — 视 API 形态评估独立实现或文档化「仅 OpenAI 兼容路径」
@@ -72,8 +47,7 @@
 
 | 能力 | 状态 | 说明 |
 |:---|:---|:---|
-| Chat | ✅ | 已列厂商均支持（非流式） |
-| Chat Stream | 未实现 | 见上方规划 |
+| Chat | ✅ | 已列厂商均支持（含非流式与流式 `chat_stream`） |
 | Embed | ✅ | Anthropic 除外 |
 | Rerank | ✅ | 仅阿里云、智谱 |
 | Image | ✅ | 仅 OpenAI、阿里云 |

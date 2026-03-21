@@ -1,10 +1,19 @@
 //! 共享 HTTP 客户端：JSON POST，默认 Bearer；[`HttpClient::post_json_with_headers`] 自定义请求头（如 Anthropic `x-api-key`）；[`HttpClient::post_json_query`] 在 URL 上附加 query 且不带 Bearer（如 Google Gemini `key`）。
+//!
+//! SSE 流式响应见 [`HttpClient::post_bearer_sse`] 等。
 
-use reqwest::Client;
-use serde::{de::DeserializeOwned, Serialize};
+use std::pin::Pin;
 use std::time::Duration;
 
+use futures::Stream;
+use reqwest::Client;
+use serde::{de::DeserializeOwned, Serialize};
+
 use crate::error::{Error, Result};
+use crate::sse::{SseByteStream, SseEvent};
+
+/// `text/event-stream` 解析后的 SSE 事件流。
+pub type SseEventStream = Pin<Box<dyn Stream<Item = Result<SseEvent>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {
@@ -53,6 +62,7 @@ impl HttpClient {
     }
 
     /// POST JSON，自定义请求头（不含 `Content-Type`，本方法会设置 `application/json`）。
+    #[cfg(feature = "anthropic")]
     pub async fn post_json_with_headers<Req, Resp, F>(
         &self,
         url: &str,
@@ -88,6 +98,7 @@ impl HttpClient {
     }
 
     /// POST JSON，URL query 参数（如 `key`），无 `Authorization` 头；本方法会设置 `Content-Type: application/json`。
+    #[cfg(feature = "google")]
     pub async fn post_json_query<Req, Resp, F>(
         &self,
         url: &str,
@@ -121,6 +132,95 @@ impl HttpClient {
 
         serde_json::from_str(&body_text).map_err(|e| Error::Parse(e.to_string()))
     }
+
+    /// POST JSON + Bearer，成功时返回 SSE 事件流（`Accept: text/event-stream`）。
+    pub async fn post_bearer_sse<Req, F>(
+        &self,
+        url: &str,
+        bearer_token: &str,
+        body: &Req,
+        map_err_body: F,
+    ) -> Result<SseEventStream>
+    where
+        Req: Serialize + ?Sized,
+        F: FnOnce(String) -> String,
+    {
+        let response = self
+            .inner
+            .post(url)
+            .header("Authorization", format!("Bearer {}", bearer_token))
+            .header("Accept", "text/event-stream")
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await?;
+        into_sse_stream(response, map_err_body).await
+    }
+
+    /// POST JSON + 自定义头，成功时返回 SSE 事件流。
+    #[cfg(feature = "anthropic")]
+    pub async fn post_json_with_headers_sse<Req, F>(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &Req,
+        map_err_body: F,
+    ) -> Result<SseEventStream>
+    where
+        Req: Serialize + ?Sized,
+        F: FnOnce(String) -> String,
+    {
+        let mut req = self
+            .inner
+            .post(url)
+            .header("Accept", "text/event-stream")
+            .header("Content-Type", "application/json");
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        let response = req.json(body).send().await?;
+        into_sse_stream(response, map_err_body).await
+    }
+
+    /// POST JSON + URL query，成功时返回 SSE 事件流。
+    #[cfg(feature = "google")]
+    pub async fn post_json_query_sse<Req, F>(
+        &self,
+        url: &str,
+        query: &[(&str, &str)],
+        body: &Req,
+        map_err_body: F,
+    ) -> Result<SseEventStream>
+    where
+        Req: Serialize + ?Sized,
+        F: FnOnce(String) -> String,
+    {
+        let response = self
+            .inner
+            .post(url)
+            .query(query)
+            .header("Accept", "text/event-stream")
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await?;
+        into_sse_stream(response, map_err_body).await
+    }
+}
+
+async fn into_sse_stream<F>(response: reqwest::Response, map_err_body: F) -> Result<SseEventStream>
+where
+    F: FnOnce(String) -> String,
+{
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().await?;
+        return Err(Error::Api {
+            status: status.as_u16(),
+            message: map_err_body(body_text),
+        });
+    }
+    Ok(Box::pin(SseByteStream::new(response.bytes_stream())))
 }
 
 #[cfg(test)]
@@ -249,6 +349,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(feature = "anthropic")]
     #[tokio::test]
     async fn post_json_with_headers_success_and_custom_headers() {
         let server = MockServer::start().await;
@@ -274,6 +375,7 @@ mod tests {
         assert_eq!(out.msg, "ok");
     }
 
+    #[cfg(feature = "anthropic")]
     #[tokio::test]
     async fn post_json_with_headers_api_error() {
         let server = MockServer::start().await;
@@ -304,6 +406,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "google")]
     #[tokio::test]
     async fn post_json_query_success_and_sends_query() {
         let server = MockServer::start().await;
@@ -327,6 +430,7 @@ mod tests {
         assert_eq!(out.msg, "ok");
     }
 
+    #[cfg(feature = "google")]
     #[tokio::test]
     async fn post_json_query_api_error() {
         let server = MockServer::start().await;

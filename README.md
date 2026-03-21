@@ -13,6 +13,7 @@
 - **按需编译** — 厂商和模态都是 Cargo feature，只用你需要的，不拉多余的依赖
 - **清晰的错误** — `ProviderDisabled`（没启用 feature）vs `Unsupported`（厂商不支持该能力）vs `Api`（远端返回错误），排查一目了然
 - **OpenAI 兼容优先** — 多数厂商走兼容路径，减少适配层厚度；不兼容的（如 Anthropic Messages、Gemini）单独实现并文档化
+- **流式支持** — Chat 支持非流式与 SSE 流式（`chat_stream`），统一 `ChatChunk` / `FinishReason` 抽象
 
 ## 快速开始
 
@@ -62,6 +63,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### 流式对话
+
+```rust
+use futures::StreamExt;
+use model_provider::{create_chat_provider, Provider, ProviderConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = ProviderConfig::new(
+        Provider::OpenAI,
+        std::env::var("OPENAI_API_KEY")?,
+        "https://api.openai.com/v1",
+        "gpt-4o-mini",
+    );
+
+    let chat = create_chat_provider(&cfg)?;
+    let mut stream = chat.chat_stream("讲一个笑话").await?;
+
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
+        if let Some(text) = chunk.delta {
+            print!("{text}");
+        }
+        if let Some(reason) = chunk.finish_reason {
+            eprintln!("\n[结束: {reason:?}]");
+        }
+    }
+    println!();
+    Ok(())
+}
+```
+
 ### 换个厂商
 
 把 `Provider::OpenAI` 改成 `Provider::Aliyun`，`base_url` 换成阿里云网关，其他代码不动：
@@ -85,6 +118,8 @@ let cfg = ProviderConfig::new(
 | 阿里云 DashScope | ✅ | ✅ | ✅ | ✅ |
 | Ollama | ✅ | ✅ | — | — |
 | 智谱 | ✅ | ✅ | ✅ | — |
+
+**Chat** 同时提供非流式（`chat`）与流式（`chat_stream`，SSE）。示例：`examples/stream_chat.rs`。
 
 ## 配置参考
 

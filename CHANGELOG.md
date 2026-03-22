@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+---
+
+## [0.1.0] - 2026-03-22
+
 ### 新增
 
 - **Chat 流式** — `ChatProvider::chat_stream` 返回 `ChatStream`，每项为 `ChatChunk`（`delta` + `finish_reason`）。OpenAI 兼容（OpenAI、阿里云、Ollama、智谱）、Anthropic Messages、Google Gemini `streamGenerateContent` 均支持 SSE。示例见 `examples/stream_chat.rs`。
@@ -22,9 +26,3 @@
 - **Image 错误语义** — `create_image_provider` 对未启用 feature 的 `OpenAI`/`Aliyun` 现返回 `ProviderDisabled`，行为与 Rerank 一致。
 - **工厂穷尽检查** — 去掉 `#[allow(unreachable_patterns)]`，用 cfg 互斥分支保证 match 穷尽。
 - **actions/cache 升级** — CI workflow 中 `actions/cache` 从 v3 升级到 v4。
-
----
-
-## 发布版本
-
-（暂无）

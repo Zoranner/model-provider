@@ -1,6 +1,6 @@
 [package]
 name = "model-provider"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Zoranner"]
 description = "Multi-provider AI API client (OpenAI, Anthropic, Google Gemini, Aliyun, Ollama, Zhipu; chat, embed incl. Gemini, rerank, image, audio stubs)"
@@ -27,8 +27,6 @@ audio = []
 all-providers = ["aliyun", "anthropic", "google", "ollama", "openai", "zhipu"]
 all-modalities = ["chat", "embed", "rerank", "image", "audio"]
 full = ["all-providers", "all-modalities"]
-# 兼容旧 feature 名：等同启用全部厂商 + 全部模态
-all = ["full"]
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

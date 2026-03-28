@@ -13,7 +13,7 @@
 - **按需编译** — 厂商和模态都是 Cargo feature，只用你需要的，不拉多余的依赖
 - **清晰的错误** — `ProviderDisabled`（没启用 feature）vs `Unsupported`（厂商不支持该能力）vs `Api`（远端返回错误），排查一目了然
 - **OpenAI 兼容优先** — 多数厂商走兼容路径，减少适配层厚度；不兼容的（如 Anthropic Messages、Gemini）单独实现并文档化
-- **流式支持** — Chat 支持非流式与 SSE 流式（`chat_stream`），统一 `ChatChunk` / `FinishReason` 抽象
+- **流式与工具** — Chat 主 API `complete` / `complete_stream`（`ChatRequest` 多轮与 `tools`）；流式 `ChatChunk` 含文本 `delta` 与 `tool_call_deltas`，统一 `FinishReason`
 
 ## 快速开始
 
@@ -35,7 +35,7 @@ model-provider = { version = "0.2", features = ["aliyun", "chat", "embed", "rera
 
 ```rust
 use model_provider::{
-    create_chat_provider, create_embed_provider, Provider, ProviderConfig,
+    create_chat_provider, create_embed_provider, ChatRequest, Provider, ProviderConfig,
 };
 
 #[tokio::main]
@@ -49,10 +49,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     cfg.dimension = Some(1536); // embed 必填
 
-    // 对话
+    // 对话（主 API：可换为多轮 messages + tools）
     let chat = create_chat_provider(&cfg)?;
-    let reply = chat.chat("用一句话介绍 Rust").await?;
-    println!("{reply}");
+    let out = chat
+        .complete(&ChatRequest::single_user("用一句话介绍 Rust"))
+        .await?;
+    println!("{}", out.content.unwrap_or_default());
 
     // 向量
     let embed = create_embed_provider(&cfg)?;
@@ -67,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use futures::StreamExt;
-use model_provider::{create_chat_provider, Provider, ProviderConfig};
+use model_provider::{create_chat_provider, ChatRequest, Provider, ProviderConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,12 +81,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let chat = create_chat_provider(&cfg)?;
-    let mut stream = chat.chat_stream("讲一个笑话").await?;
+    let mut stream = chat
+        .complete_stream(&ChatRequest::single_user("讲一个笑话"))
+        .await?;
 
     while let Some(item) = stream.next().await {
         let chunk = item?;
         if let Some(text) = chunk.delta {
             print!("{text}");
+        }
+        if let Some(deltas) = chunk.tool_call_deltas {
+            eprintln!("\n[tool_calls: {deltas:?}]");
         }
         if let Some(reason) = chunk.finish_reason {
             eprintln!("\n[结束: {reason:?}]");
@@ -94,6 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+单条 `user` 仍可用便捷方法 `chat` / `chat_stream(prompt)`，内部等价于 `complete` / `complete_stream`（`ChatRequest::single_user`）。
 
 ### 换个厂商
 
@@ -119,7 +128,7 @@ let cfg = ProviderConfig::new(
 | Ollama | ✅ | ✅ | — | — |
 | 智谱 | ✅ | ✅ | ✅ | — |
 
-**Chat** 同时提供非流式（`chat`）与流式（`chat_stream`，SSE）。示例：`examples/stream_chat.rs`。
+**Chat** 主路径为非流式 `complete` 与流式 `complete_stream`（SSE）；`chat` / `chat_stream` 为单轮糖。示例：`examples/stream_chat.rs`。
 
 ## 配置参考
 

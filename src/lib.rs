@@ -11,7 +11,7 @@
 //!
 //! # 各模态契约摘要
 //!
-//! **对话（[`ChatProvider`]）**：`OpenAI` / `Aliyun` / `Ollama` / `Zhipu` 为 OpenAI 兼容 `POST {base_url}/chat/completions`；非流式 JSON 与流式 SSE（[`ChatProvider::chat_stream`]，`stream: true`）均支持。每次调用只发送一条 `user` 消息，`temperature` 固定为 `0.2`。**`Anthropic`**（`anthropic` + `chat`）为 **Anthropic Messages 兼容**，`POST {base_url}/messages`（流式同样 `stream: true`，SSE 事件见官方 streaming 文档）。**`Google`**（`google` + `chat`）非流式为 **`generateContent`**；流式为 **`streamGenerateContent`**，API Key 为 query `key`（见 [`chat`]）。
+//! **对话（[`ChatProvider`]）**：主入口为 [`ChatProvider::complete`] / [`ChatProvider::complete_stream`]（[`ChatRequest`]：多轮 [`ChatMessage`]、可选 `tools` / `tool_choice`、`temperature` / `max_tokens` / `top_p`；未指定 `temperature` 时默认 `0.2`）。`OpenAI` / `Aliyun` / `Ollama` / `Zhipu` 为 OpenAI Chat Completions 兼容 `POST {base_url}/chat/completions`；流式 SSE 含 `delta.tool_calls`。**`Anthropic`** 为 Messages `POST {base_url}/messages`（`system` 提至请求顶层，工具为 `input_schema`，流式含 `tool_use` / `input_json_delta`）。**`Google`** 为 `generateContent` / `streamGenerateContent`（`systemInstruction`、`tools.functionDeclarations`、`functionCall` / `functionResponse`）。[`ChatProvider::chat`] / [`chat_stream`] 为单条 `user` 的便捷封装（见 [`chat`]）。
 //!
 //! **向量（[`EmbedProvider`]）**：`OpenAI` / `Aliyun` / `Ollama` / `Zhipu` 为 `POST {base_url}/embeddings`（非流式 JSON）。**`Google`**（`google` + `embed`）为 Gemini **`embedContent` / `batchEmbedContents`**（query `key`），见 [`embed`]。创建前须在 [`ProviderConfig::dimension`] 中设置维数，否则工厂返回 [`Error::MissingConfig`]。约定与文本预处理见 [`embed`]。
 //!
@@ -45,7 +45,11 @@ pub use error::{Error, Result};
 #[cfg(feature = "audio")]
 pub use audio::{AudioFormat, SpeechProvider, TranscriptionProvider};
 #[cfg(feature = "chat")]
-pub use chat::{ChatChunk, ChatProvider, ChatStream, FinishReason};
+pub use chat::{
+    ChatChunk, ChatMessage, ChatProvider, ChatRequest, ChatResponse, ChatStream, FinishReason,
+    FunctionCallResult, FunctionDefinition, Role, ToolCall, ToolCallDelta, ToolChoice,
+    ToolDefinition,
+};
 #[cfg(feature = "embed")]
 pub use embed::EmbedProvider;
 #[cfg(feature = "image")]
@@ -53,7 +57,7 @@ pub use image::{ImageOutput, ImageProvider, ImageSize};
 #[cfg(feature = "rerank")]
 pub use rerank::{RerankItem, RerankProvider};
 
-/// 创建 Chat Provider（单轮对话；非流式 [`ChatProvider::chat`] 与流式 [`ChatProvider::chat_stream`]；见 [`chat`]）。
+/// 创建 Chat Provider（[`ChatProvider::complete`] / [`ChatProvider::complete_stream`]；见 [`chat`]）。
 #[cfg(feature = "chat")]
 pub fn create_chat_provider(config: &ProviderConfig) -> Result<Box<dyn ChatProvider>> {
     chat::create(config)

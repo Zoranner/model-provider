@@ -1,24 +1,16 @@
-//! 对话补全：非流式 JSON 与 **SSE 流式**（`chat_stream`）。
+//! 对话补全：主 API 为 [`ChatProvider::complete`] / [`ChatProvider::complete_stream`]（多轮、`tools`、流式 `tool_calls` 增量）。
 //!
-//! # [`ChatProvider::chat`]
+//! [`ChatProvider::chat`] / [`ChatProvider::chat_stream`] 为单条 `user` 消息的便捷封装，内部委托到上述方法。
 //!
-//! `prompt` 为本轮**唯一用户文本**：OpenAI 兼容分支将其作为单条 `role: user` 消息发送；Anthropic、Google 的请求 JSON 形状见各自实现（Google 单轮示例不发送可选字段 `role`）。均不含 system、多轮 history；若需要须另行扩展 API 或直连接口。
+//! **`OpenAI` / `Aliyun` / `Ollama` / `Zhipu`**：OpenAI Chat Completions 兼容 `POST {base_url}/chat/completions`；非流式 JSON；流式时 `stream: true`，`data:` 为 chunk JSON。
 //!
-//! **`OpenAI` / `Aliyun` / `Ollama` / `Zhipu`**：OpenAI 兼容 `POST {base_url}/chat/completions`，非流式；流式时请求体 `stream: true`，响应 `text/event-stream`，`data:` 行为 OpenAI Chat Completions chunk JSON。
+//! **`Anthropic`**（`anthropic` + `chat`）：Messages API `POST {base_url}/messages`；流式 SSE 见 [Anthropic streaming](https://docs.anthropic.com/en/api/messages-streaming)。
 //!
-//! **`Anthropic`**（`anthropic` + `chat`）：**Anthropic Messages 兼容**实现，见源码 `anthropic_compat.rs`。流式时 `stream: true`，SSE 事件见 [Anthropic streaming](https://docs.anthropic.com/en/api/messages-streaming)。
-//!
-//! **`Google`**（`google` + `chat`）：非流式为 `generateContent`；流式为 `streamGenerateContent`，SSE `data:` 为 `GenerateContentResponse` 片段 JSON。
-//!
-//! # [`ChatProvider::chat_stream`]
-//!
-//! 返回 [`ChatStream`]：每项为 [`ChatChunk`]（文本增量与可选 [`FinishReason`]`）。具体字段映射见各实现与 `docs/http-endpoints.md`。
+//! **`Google`**（`google` + `chat`）：`generateContent` / `streamGenerateContent`；`tools` 映射为 Gemini `FunctionDeclaration`。
 //!
 //! # URL 与鉴权（OpenAI 兼容分支）
 //!
-//! 请求地址为 `{base_url}/chat/completions`，其中 `base_url` 来自 [`ProviderConfig`]，会先对 `base_url` 做 `trim_end_matches('/')` 再拼接路径段。
-//!
-//! 鉴权为 `Authorization: Bearer {api_key}`。**空字符串密钥仍会原样放入请求头**；网关是否接受由上游决定（例如部分本地 Ollama 部署不校验 Bearer）。
+//! `{base_url}/chat/completions`，`base_url` 会 `trim_end_matches('/')`。鉴权 `Authorization: Bearer {api_key}`。
 
 mod types;
 
@@ -30,13 +22,14 @@ mod openai_compat;
 
 #[cfg(feature = "anthropic")]
 use anthropic_compat::AnthropicCompatChat;
-#[cfg(feature = "anthropic")]
-pub use anthropic_compat::ANTHROPIC_VERSION;
 use async_trait::async_trait;
 #[cfg(feature = "google")]
 use google_gemini::GoogleGeminiChat;
 use openai_compat::OpenaiCompatChat;
-pub use types::{ChatChunk, FinishReason};
+pub use types::{
+    ChatChunk, ChatMessage, ChatRequest, ChatResponse, FinishReason, FunctionCallResult,
+    FunctionDefinition, Role, ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
+};
 
 use std::pin::Pin;
 
@@ -44,18 +37,31 @@ use futures::Stream;
 
 use crate::config::Provider;
 use crate::config::ProviderConfig;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// 流式对话：每项为 [`Result<ChatChunk>`](crate::error::Result)。
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<ChatChunk>> + Send>>;
 
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
-    /// 单轮用户消息补全；语义与模块级文档一致。
-    async fn chat(&self, prompt: &str) -> Result<String>;
+    /// 多轮 / 工具调用等非流式补全。
+    async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse>;
 
-    /// 单轮流式补全；SSE 解析失败或上游错误时流中会出现 `Err`。
-    async fn chat_stream(&self, prompt: &str) -> Result<ChatStream>;
+    /// 同上，SSE 流式；chunk 含文本增量与 [`ToolCallDelta`]。
+    async fn complete_stream(&self, request: &ChatRequest) -> Result<ChatStream>;
+
+    /// 单条 `user` 消息；仅返回 assistant 文本（无文本则 `MissingField`）。
+    async fn chat(&self, prompt: &str) -> Result<String> {
+        let resp = self.complete(&ChatRequest::single_user(prompt)).await?;
+        resp.content
+            .filter(|s| !s.is_empty())
+            .ok_or(Error::MissingField("response content"))
+    }
+
+    /// 单条 `user` 消息流式。
+    async fn chat_stream(&self, prompt: &str) -> Result<ChatStream> {
+        self.complete_stream(&ChatRequest::single_user(prompt)).await
+    }
 }
 
 pub(crate) fn create(config: &ProviderConfig) -> Result<Box<dyn ChatProvider>> {

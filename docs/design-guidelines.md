@@ -11,7 +11,7 @@
 **目标**：在 Rust 中用统一配置调用多家云上的常见 AI HTTP API。
 
 **默认假设**：
-- 单次请求为主；**Chat** 同时提供非流式 JSON 与 **SSE 流式**（`ChatProvider::chat_stream`），其它模态仍为非流式 JSON
+- **Chat** 主 API 为 `ChatProvider::complete` / `complete_stream`（多轮、`tools`、流式工具增量）；`chat` / `chat_stream` 为单条 `user` 的便捷封装；其它模态仍为非流式 JSON
 - 请求与响应主体为 JSON（流式时响应为 `text/event-stream`，`data:` 行为 JSON 片段）
 - TLS 走 rustls（与 reqwest 选型一致）
 
@@ -20,7 +20,7 @@
 - 长连接（除单次 HTTP 流式读响应体外）
 - 重试风暴控制
 
-流式 Chat 将各厂商增量映射为统一的 `ChatChunk` / `FinishReason`（见 crate 根导出与 `chat` 模块），不暴露厂商原始 SSE 事件结构。若需要工具调用增量等更细粒度形态，应另开 trait 或扩展类型并在本文档记录。
+流式 Chat 将各厂商增量映射为统一的 `ChatChunk`（`delta` 文本、`tool_call_deltas` 工具片段、`finish_reason`）与 `FinishReason`，不暴露厂商原始 SSE 事件结构。OpenAI 兼容路径对齐 Chat Completions；Anthropic 对齐 Messages；Gemini 对齐 `generateContent` / `streamGenerateContent`。
 
 ---
 
@@ -103,7 +103,7 @@ path = "/chat/completions"
 
 crate 根重导出的稳定面：
 - trait：`ChatProvider`、`EmbedProvider` 等
-- 类型：`Provider`、`ProviderConfig`、`Error`、`ChatChunk`、`FinishReason` 等
+- 类型：`Provider`、`ProviderConfig`、`Error`、`ChatRequest`、`ChatResponse`、`ChatMessage`、`ChatChunk`、`FinishReason`、`ToolCall`、`ToolCallDelta` 等
 - 工厂：`create_chat_provider` 等
 
 ### 实现细节
@@ -133,8 +133,9 @@ crate 根重导出的稳定面：
 
 ```rust
 pub struct ChatChunk {
-    pub delta: Option<String>,        // 文本增量
-    pub finish_reason: Option<FinishReason>,  // 结束原因
+    pub delta: Option<String>,
+    pub tool_call_deltas: Option<Vec<ToolCallDelta>>,
+    pub finish_reason: Option<FinishReason>,
 }
 
 pub enum FinishReason {
@@ -149,9 +150,9 @@ pub enum FinishReason {
 
 | 厂商 | 流式端点 | SSE 格式 | 映射说明 |
 |:---|:---|:---|:---|
-| OpenAI 兼容 | 同非流式，`stream: true` | `data: {...}`，结束 `[DONE]` | `choices[].delta.content` |
-| Anthropic | 同非流式，`stream: true` | `event:` + `data:` | `content_block_delta.delta.text` |
-| Google | `:streamGenerateContent` | `data: {...}` | `candidates[].content.parts[].text` |
+| OpenAI 兼容 | 同非流式，`stream: true` | `data: {...}`，结束 `[DONE]` | `delta.content`、`delta.tool_calls` |
+| Anthropic | 同非流式，`stream: true` | `event:` + `data:` | `text_delta`、`content_block_start`（tool_use）、`input_json_delta` |
+| Google | `:streamGenerateContent` | `data: {...}` | `parts[].text`、`parts[].functionCall` |
 
 ### 错误处理
 

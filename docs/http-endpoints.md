@@ -25,7 +25,7 @@ POST {base_url}/chat/completions
 Authorization: Bearer {api_key}
 ```
 
-**请求体**：
+**请求体**（由 `ChatRequest` 映射；未指定 `temperature` 时默认 `0.2`）：
 ```json
 {
   "model": "gpt-4o-mini",
@@ -34,17 +34,20 @@ Authorization: Bearer {api_key}
 }
 ```
 
-**响应解析**：`choices[0].message.content`
+可含多轮 `messages`（`system` / `user` / `assistant` / `tool`）、`tools`、`tool_choice`、`max_tokens`、`top_p`（与 OpenAI Chat Completions 一致）。
 
-**流式（`chat_stream`）**：
+**响应解析**：`choices[0].message` 的 `content` 与 `tool_calls` → `ChatResponse`。
+
+**流式（`complete_stream`）**：
 
 - 请求体在以上基础上增加 `"stream": true`
 - 请求头增加 `Accept: text/event-stream`
-- 响应为 SSE：`data:` 行为 Chat Completions **chunk** JSON（含 `choices[].delta.content`、`finish_reason`），流结束为 `data: [DONE]`
+- 响应为 SSE：`data:` 行为 Chat Completions **chunk** JSON，流结束为 `data: [DONE]`
 
-**chunk 解析**：
+**chunk 映射**：
 - `choices[].delta.content` → `ChatChunk.delta`
-- `choices[].finish_reason` → `ChatChunk.finish_reason`（映射：`stop`/`end_turn` → `Stop`，`length` → `Length`，`content_filter` → `ContentFilter`，`tool_calls` → `ToolCalls`）
+- `choices[].delta.tool_calls` → `ChatChunk.tool_call_deltas`（`index` / `id` / `function.name` / `function.arguments` 分片）
+- `choices[].finish_reason` → `ChatChunk.finish_reason`（`stop`/`end_turn` → `Stop`，`length` → `Length`，`content_filter` → `ContentFilter`，`tool_calls` → `ToolCalls`）
 
 | 厂商 | 典型 base_url |
 |:---|:---|
@@ -63,7 +66,7 @@ x-api-key: {api_key}
 anthropic-version: 2023-06-01
 ```
 
-**请求体**：
+**请求体**（`ChatRequest`：`system` 角色会合并为顶层 `system` 字符串；`max_tokens` 默认 `4096` 若未设置）：
 ```json
 {
   "model": "claude-3-5-sonnet-20241022",
@@ -73,22 +76,25 @@ anthropic-version: 2023-06-01
 }
 ```
 
-**响应解析**：`content` 数组中各 `type: "text"` 块的 `text` 拼接
+可含 `tools`（`input_schema`）、`tool_choice`，及带 `tool_use` / `tool_result` 内容块的多轮消息。`ToolChoice::None` 时若仍带 `tools`，请求体中**不**含 `tool_choice` 字段（与默认行为一致）。
 
-**流式（`chat_stream`）**：
+**响应解析**：`content` 中 `text` 与 `tool_use` 块 → `ChatResponse.content` / `tool_calls`。
+
+**流式（`complete_stream`）**：
 
 - 请求体增加 `"stream": true`
-- 响应为 SSE：事件名如 `content_block_delta`（文本在 `delta.text`）、`message_delta`（`stop_reason`）、`message_stop` 等；库映射为 `ChatChunk` / `FinishReason`
+- 响应为 SSE：事件名如 `content_block_delta`、`content_block_start`（`tool_use`）、`input_json_delta`、`message_delta`、`message_stop` 等
 - 流内 `event: error` 映射为 `Error::Api`
 
-**事件映射**：
-- `content_block_delta` + `delta.type == "text_delta"` → `ChatChunk.delta(delta.text)`
-- `message_delta.stop_reason` → `ChatChunk.finish_reason`（`end_turn`/`stop_sequence` → `Stop`，`max_tokens` → `Length`，`tool_use` → `ToolCalls`）
-- `message_stop` → `ChatChunk.finish(Stop)`
+**事件映射（摘要）**：
+- `text_delta` → `ChatChunk.delta`
+- `content_block_start`（tool_use）与 `input_json_delta` → `ChatChunk.tool_call_deltas`
+- `message_delta.stop_reason` → `ChatChunk.finish_reason`
+- `message_stop`：若 `message_delta` 已产出 `finish_reason`，则不再重复产出 `Stop`；否则映射为 `ChatChunk.finish(Stop)`
 
 **注意**：
-- `max_tokens` 为库内常量，不可配置
-- `anthropic-version` 与 `model_provider::chat::ANTHROPIC_VERSION` 一致
+- `max_tokens` 来自 `ChatRequest::max_tokens` 或默认 `4096`
+- `anthropic-version` 请求头当前实现为 `2023-06-01`
 - 兼容遵循相同契约的第三方网关（如部分 Coding Plan）
 
 ### Google Gemini
@@ -99,31 +105,33 @@ anthropic-version: 2023-06-01
 POST {base_url}/models/{model}:generateContent?key={api_key}
 ```
 
-**请求体**：
+**请求体**（`ChatRequest`：`contents` 含 `role` + `parts`；`system` → `systemInstruction`；`tools` → `tools[].functionDeclarations`；可选 `toolConfig.functionCallingConfig`）：
 ```json
 {
-  "contents": [{"parts": [{"text": "你好"}]}],
+  "contents": [{"role": "user", "parts": [{"text": "你好"}]}],
   "generationConfig": {"temperature": 0.2}
 }
 ```
 
-**响应解析**：`candidates[0].content.parts` 中各 `text` 拼接
+**响应解析**：`parts` 中 `text` 与 `functionCall` → `ChatResponse`；存在 `functionCall` 时 `finish_reason` 视为 `ToolCalls`。
 
-**流式（`chat_stream`）**：
+**流式（`complete_stream`）**：
 
 ```
 POST {base_url}/models/{model}:streamGenerateContent?key={api_key}
 ```
 
-请求体与非流式 `generateContent` 相同。响应为 SSE：`data:` 行为 `GenerateContentResponse` 片段 JSON；从 `candidates[].content.parts[].text` 取增量。若某包中 `candidates` 为空且含 `promptFeedback`，返回解析错误。
+请求体与非流式相同。响应为 SSE：`data:` 为响应片段 JSON。若某包中 `candidates` 为空且含 `promptFeedback`，返回解析错误。
 
 **chunk 解析**：
-- `candidates[].content.parts[].text` 拼接 → `ChatChunk.delta`
-- `candidates[].finishReason` → `ChatChunk.finish_reason`（映射：`STOP`/`FINISH_REASON_STOP` → `Stop`，`MAX_TOKENS`/`FINISH_REASON_MAX_TOKENS` → `Length`，`SAFETY`/`RECITATION`/`OTHER` → `ContentFilter`）
+- `parts[].text` → `ChatChunk.delta`
+- `parts[].functionCall`（`name` / `args`）→ `ChatChunk.tool_call_deltas`
+- `finishReason` → `ChatChunk.finish_reason`（映射：`STOP` 等 → `Stop` / `Length` / `ContentFilter`）；若同帧含 `functionCall` 且已带结束信号，则与非流式一致，统一为 `ToolCalls`（避免仅映射 `STOP` 与工具调用语义冲突）
 
 **注意**：
 - 不使用 Bearer，API Key 作为 query 参数 `key`
 - `{model}` 直接嵌入路径，如 `gemini-2.0-flash`
+- `Role::Tool` 映射为 `functionResponse` 时，`ChatMessage.name` 须非空，否则在发请求前返回 `MissingField("tool.name")`
 - 若 HTTP 200 但 `candidates` 为空（如安全拦截），返回 `Parse` 错误并含 `promptFeedback` 摘要
 
 **典型 base_url**：`https://generativelanguage.googleapis.com/v1beta`

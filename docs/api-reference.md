@@ -74,7 +74,7 @@ let provider: Provider = "unknown".parse()?; // Err(UnknownProvider)
 fn create_chat_provider(cfg: &ProviderConfig) -> Result<Box<dyn ChatProvider>>
 ```
 
-创建对话 provider。需要启用 `chat` feature + 对应厂商 feature。支持非流式（`chat`）与流式（`chat_stream`）两种调用方式。
+创建对话 provider。需要启用 `chat` feature + 对应厂商 feature。支持 `complete` / `complete_stream`（主路径）与便捷方法 `chat` / `chat_stream`（单条 `user`）。
 
 ### create_embed_provider
 
@@ -118,18 +118,23 @@ fn create_speech_provider(cfg: &ProviderConfig) -> Result<Box<dyn SpeechProvider
 ```rust
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse>;
+    async fn complete_stream(&self, request: &ChatRequest) -> Result<ChatStream>;
     async fn chat(&self, prompt: &str) -> Result<String>;
     async fn chat_stream(&self, prompt: &str) -> Result<ChatStream>;
 }
 ```
 
-- **`chat`**：单轮对话，返回完整文本。
-- **`chat_stream`**：单轮流式补全，返回 `ChatStream`。使用 `futures::StreamExt` 驱动。
+- **`complete`**：非流式补全；`ChatRequest` 含 `messages`（`ChatMessage` 多轮、`Role::Tool`）、可选 `tools` / `tool_choice`、`temperature` / `max_tokens` / `top_p`（未设 `temperature` 时默认 `0.2`）。返回 `ChatResponse`（`content`、`tool_calls`、`finish_reason`）。
+- **`complete_stream`**：同上请求形状，SSE 流式；`ChatChunk` 含 `delta`、`tool_call_deltas`、`finish_reason`。
+- **`chat` / `chat_stream`**：默认实现委托到 `complete` / `complete_stream`（`ChatRequest::single_user`）；仅返回文本时无 `content` 会得到 `MissingField("response content")`。
+- **`ChatMessage`**：便捷构造 `user` / `system` / `assistant` / `tool` / `tool_with_name`（多轮工具链路与 OpenAI `tool` 消息对应；Gemini 的 `functionResponse` 需要非空 `name`，请用 `tool_with_name` 或设置 `name` 字段）。
+- **`ToolDefinition`**：`ToolDefinition::function` / `function_with_description` 对应 OpenAI `tools[]` 形状。
 
 **实现约定**：
-- 单条用户消息
-- `temperature` 固定为 `0.2`
-- 流式请求体含 `stream: true`（OpenAI 兼容、Anthropic）；Gemini 使用 `streamGenerateContent` 端点
+- OpenAI 兼容：`POST …/chat/completions`（流式 `stream: true`）
+- Anthropic：Messages `POST …/messages`（`system` 自 `messages` 抽出至顶层）
+- Google：`generateContent` / `streamGenerateContent`（query `key`）
 
 ### EmbedProvider
 
@@ -224,7 +229,15 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = Result<ChatChunk>> + Send>>;
 
 pub struct ChatChunk {
     pub delta: Option<String>,
+    pub tool_call_deltas: Option<Vec<ToolCallDelta>>,
     pub finish_reason: Option<FinishReason>,
+}
+
+pub struct ToolCallDelta {
+    pub index: u32,
+    pub id: Option<String>,
+    pub function_name: Option<String>,
+    pub function_arguments: Option<String>,
 }
 
 pub enum FinishReason {
@@ -239,7 +252,7 @@ pub enum FinishReason {
 
 ```rust
 use futures::StreamExt;
-use model_provider::{create_chat_provider, Provider, ProviderConfig};
+use model_provider::{create_chat_provider, ChatRequest, Provider, ProviderConfig};
 
 let cfg = ProviderConfig::new(
     Provider::OpenAI,
@@ -249,7 +262,9 @@ let cfg = ProviderConfig::new(
 );
 let chat = create_chat_provider(&cfg)?;
 
-let mut stream = chat.chat_stream("介绍一下 Rust").await?;
+let mut stream = chat
+    .complete_stream(&ChatRequest::single_user("介绍一下 Rust"))
+    .await?;
 while let Some(item) = stream.next().await {
     let chunk = item?;
     if let Some(text) = chunk.delta {
@@ -265,9 +280,9 @@ while let Some(item) = stream.next().await {
 
 | 厂商 | 端点 | SSE 格式 |
 |:---|:---|:---|
-| OpenAI / 阿里云 / Ollama / 智谱 | `POST …/chat/completions` + `stream: true` | `data: {...}`，结束 `data: [DONE]` |
-| Anthropic | `POST …/messages` + `stream: true` | `event: content_block_delta` 等事件类型 |
-| Google | `POST …/models/{model}:streamGenerateContent` | `data: {...}` |
+| OpenAI / 阿里云 / Ollama / 智谱 | `POST …/chat/completions` + `stream: true` | `data: {...}`，结束 `data: [DONE]`；含 `delta.tool_calls` |
+| Anthropic | `POST …/messages` + `stream: true` | `content_block_delta`、`content_block_start`（tool）、`input_json_delta` 等 |
+| Google | `POST …/models/{model}:streamGenerateContent` | `data: {...}`；`parts` 含 `functionCall` |
 
 ---
 
@@ -333,4 +348,4 @@ create_rerank_provider(&cfg)?;  // Unsupported: OpenAI 没有 rerank
 
 **图例**：✅ 已实现 | — 不支持或未实现
 
-**Chat** 同时提供非流式（`chat`）与流式（`chat_stream`），见[流式对话](#流式对话)。
+**Chat** 主路径为 `complete` / `complete_stream`，见[流式对话](#流式对话)。
